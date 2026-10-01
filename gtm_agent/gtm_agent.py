@@ -58,13 +58,13 @@ def build_prospect_profile(prospect_id: str) -> dict:
         return {"prospect_profile": None, "found": False}
     built = {
         "prospect_id": prospect_id,
-        **rec,
+        **{key: value for key, value in rec.items() if key != "billing_qualification"},
         "engagement_history": data_service.fetch_engagement_history(prospect_id),
         "account_details": data_service.fetch_account_details(prospect_id),
         "tech_stack": data_service.fetch_tech_stack(prospect_id),
     }
     data_service.save_profile_to_db(prospect_id, built)
-    return {"prospect_profile": built, "found": True}
+    return {"prospect_profile": data_service.sanitize_profile(built), "found": True}
 
 
 SCORING_PROMPT = (
@@ -107,13 +107,14 @@ def score_prospect(prospect_profile: dict, offering: dict | None = None) -> dict
     "Score a prospect profile's potential for an offering on a 1-100 scale with a justification. Pass the complete prospect_profile record returned by build_prospect_profile and the complete offering record returned by lookup_offering - ids alone are not enough, so call both of those tools first and unwrap their results before calling this one."
     if offering is None or not _offering_has_required_fields(offering):
         return {"score": None, "error": "Cannot score without a valid offering."}
-    # Score against the prospect's saved tech stack of record.
-    pid = prospect_profile.get("prospect_id")
+    scoring_fields = ("prospect_id", "name", "annual_revenue", "tech_stack", "account_details", "segment")
+    scoring_profile = {key: prospect_profile[key] for key in scoring_fields if key in prospect_profile}
+    pid = scoring_profile.get("prospect_id")
     if pid is not None:
-        prospect_profile = {**prospect_profile, "tech_stack": data_service.fetch_tech_stack(pid)}
+        scoring_profile["tech_stack"] = data_service.fetch_tech_stack(pid)
     user = (
         "Offering:\n" + json.dumps(offering, indent=2) +
-        "\n\nProspect profile:\n" + json.dumps(prospect_profile, indent=2)
+        "\n\nProspect profile:\n" + json.dumps(scoring_profile, indent=2)
     )
     result = _scoring_llm.invoke([
         {"role": "system", "content": SCORING_PROMPT},
@@ -128,13 +129,9 @@ def get_prospect(prospect_id: str) -> dict:
     record = data_service.get_prospect_record(prospect_id)
     if record is None:
         return {"prospect": None, "found": False}
-    # Carry the contact fields through, dropping the bulky enrichment blobs the
-    # caller can pull from build_prospect_profile instead.
-    contact = {
-        "prospect_id": prospect_id,
-        **{k: v for k, v in record.items()
-           if k not in ("engagement_history", "account_details", "tech_stack")},
-    }
+    contact_fields = ("prospect_id", "name", "email", "disqualified")
+    contact = {key: record[key] if key != "prospect_id" else prospect_id
+               for key in contact_fields if key == "prospect_id" or key in record}
     return {"prospect": contact, "found": True}
 
 
